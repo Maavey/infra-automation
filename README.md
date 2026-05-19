@@ -59,6 +59,45 @@ Run the script directly on the server where the certificate is being renewed or 
 
 The current toolkit can safely automate certificate replacement for:
 
+
+## 🆓 Free Wildcard Certificate Generation
+
+Maverick also includes a standalone PowerShell-based wildcard certificate generator using:
+
+- Let's Encrypt
+- ACME protocol
+- Manual DNS-01 challenge validation
+- No opaque executables
+
+### Supported Features
+
+| Feature | Supported |
+|---|---|
+| Wildcard certificates (*.domain.com) | ✅ |
+| Manual DNS TXT validation | ✅ |
+| PFX export generation | ✅ |
+| Custom PFX password | ✅ |
+| Transparent PowerShell workflow | ✅ |
+| Automatic installation into services | ❌ |
+| DNS API automatic renewals | 🚧 Planned |
+
+### Example Workflow
+
+1. Run the wildcard generation script
+2. Enter the root domain
+3. Add the displayed DNS TXT records
+4. Confirm once DNS records are created
+5. Script validates ownership with Let's Encrypt
+6. Generated PFX is copied beside the script
+7. Use the PFX with the main Maverick Certificate Toolkit
+
+### Notes
+
+- Wildcard certificates require DNS validation and cannot use regular HTTP validation.
+- Manual DNS validation is ideal for environments behind WAFs, F5, reverse proxies, or blocked port 80 access.
+- Future versions may support automatic DNS provider integrations for unattended renewals.
+
+
 | Platform | Supported |
 |---|---|
 | IIS | ✅ |
@@ -140,9 +179,9 @@ Planned future features:
 
 - 🔄 Script version checking
 - ⬇️ Optional automatic update downloads
-- 🆓 Automatic free certificate generation
-- 🔐 ACME / Let's Encrypt support
+- 🆓 Automatic free wildcard certificate generation
 - ♻️ Automated renewal workflows
+- ☁️ Future DNS provider API integrations (Cloudflare, Route53, GoDaddy, etc.)
 - 📅 Certificate expiration monitoring
 - 📊 HTML reporting
 - 🖥️ Multi-server orchestration
