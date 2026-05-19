@@ -60,6 +60,14 @@ Run the script directly on the server where the certificate is being renewed or 
 The current toolkit can safely automate certificate replacement for:
 
 
+
+| Platform | Supported |
+|---|---|
+| IIS | ✅ |
+| Exchange | ✅ |
+| ADFS | ✅ |
+| WAP | ✅ |
+
 ## 🆓 Free Wildcard Certificate Generation
 
 Maverick also includes a standalone PowerShell-based wildcard certificate generator using:
@@ -97,13 +105,6 @@ Maverick also includes a standalone PowerShell-based wildcard certificate genera
 - Manual DNS validation is ideal for environments behind WAFs, F5, reverse proxies, or blocked port 80 access.
 - Future versions may support automatic DNS provider integrations for unattended renewals.
 
-
-| Platform | Supported |
-|---|---|
-| IIS | ✅ |
-| Exchange | ✅ |
-| ADFS | ✅ |
-| WAP | ✅ |
 
 ---
 
@@ -179,9 +180,8 @@ Planned future features:
 
 - 🔄 Script version checking
 - ⬇️ Optional automatic update downloads
-- 🆓 Automatic free wildcard certificate generation
-- ♻️ Automated renewal workflows
-- ☁️ Future DNS provider API integrations (Cloudflare, Route53, GoDaddy, etc.)
+- ♻️ Automated certificate renewal workflows
+- ☁️ DNS provider API integrations for automatic DNS-01 validation
 - 📅 Certificate expiration monitoring
 - 📊 HTML reporting
 - 🖥️ Multi-server orchestration
