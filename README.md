@@ -41,6 +41,18 @@ Run the script directly on the server where the certificate is being renewed or 
 
 ---
 
+# ⭐ Why Maverick
+
+| Principle | Meaning |
+|---|---|
+| 🔎 Transparent | Fully readable automation |
+| 🛡️ Safe | Designed with production safeguards |
+| 🧑‍💻 Admin-friendly | Built for real infrastructure admins |
+| ⚙️ Practical | Focused on real repetitive workloads |
+| 🚫 No hidden behavior | No obfuscation or forced telemetry |
+
+---
+
 # ✅ Current Features
 
 ## 🔐 Certificate Management Automation
@@ -144,11 +156,13 @@ Planned future features:
 
 ---
 
-# 🛠️ Automation Services
+# 💼 Enterprise Automation
 
 Maverick Infrastructure Automation is not limited to certificate management.
 
 The goal is broader operational automation for Microsoft infrastructure environments.
+
+We can help automate repetitive manual infrastructure workloads while keeping processes transparent, maintainable, and administrator-friendly.
 
 Examples include:
 
@@ -157,35 +171,12 @@ Examples include:
 - Minimizing human error
 - Automating infrastructure maintenance
 - Simplifying complex operational workflows
-
----
-
-# 💼 Enterprise Automation
-
-We can help automate repetitive manual infrastructure workloads while keeping processes transparent, maintainable, and administrator-friendly.
-
-Potential automation areas include:
-
-- Exchange operations
-- IIS management
 - Microsoft 365 administration
 - Certificate lifecycle management
 - Hybrid identity tasks
 - Reporting and auditing
 - Scheduled maintenance workflows
 - PowerShell operational tooling
-
----
-
-# ⭐ Why Maverick
-
-| Principle | Meaning |
-|---|---|
-| 🔎 Transparent | Fully readable automation |
-| 🛡️ Safe | Designed with production safeguards |
-| 🧑‍💻 Admin-friendly | Built for real infrastructure admins |
-| ⚙️ Practical | Focused on real repetitive workloads |
-| 🚫 No hidden behavior | No obfuscation or forced telemetry |
 
 ---
 
