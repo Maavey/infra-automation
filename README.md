@@ -214,5 +214,5 @@ Created and maintained by **Ralph**
 
 This project is provided as-is for educational and operational use.
 
-Please retain original attribution when redistributing or modifying the project.
+### [Buy me a Coffee?](https://www.paypal.com/donate/?hosted_button_id=HV9H8JQ6XHGZY)
 
