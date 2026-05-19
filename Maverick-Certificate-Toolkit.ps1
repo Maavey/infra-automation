@@ -1,13 +1,7 @@
 #Set-ExecutionPolicy Bypass -Scope Process -Force
-<#
-Maverick Certificate Toolkit
-Version: 1.0.0
-#>
-
 cls
-
 $ScriptName = "Maverick Certificate Toolkit"
-$ScriptVersion = "1.0.0"
+$ScriptVersion = "1.0.1"
 $ScriptAuthor = "Maverick"
 $ExpiryWarningDays = 30
 
@@ -188,7 +182,6 @@ function Get-NewPfxPreview {
     while (-not $preview) {
         $plainPassword = Read-Host "Enter PFX password, or type CANCEL" -AsSecureString
 
-        # Read-Host -AsSecureString cannot be directly compared to CANCEL, so briefly convert only for cancel check.
         $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($plainPassword)
         try {
             $plainCheck = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr)
@@ -716,7 +709,7 @@ function Invoke-ExchangeReplace {
             $imported = $existingExchangeCert
         } else {
             $imported = Import-ExchangeCertificate `
-                -FileData ([Byte[]](Get-Content -Path $pfx.File.FullName -Encoding Byte -ReadCount 0)) `
+                -FileData ([System.IO.File]::ReadAllBytes($pfx.File.FullName)) `
                 -Password $pfx.Password `
                 -PrivateKeyExportable $true
         }
