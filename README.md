@@ -210,9 +210,21 @@ Created and maintained by **Ralph**
 
 ---
 
+# ☕ Support The Project
+
+If Maverick Infrastructure Automation helps simplify your operational workload or saves you time during deployments and maintenance, consider supporting the project.
+
+Your support helps improve:
+- New automation features
+- Enterprise integrations
+- Future tooling and maintenance
+
+### ❤️ Support Maverick Infrastructure Automation
+
+[![Buy Me A Coffee](https://img.shields.io/badge/Support-PayPal-00457C?logo=paypal&logoColor=white)](https://www.paypal.com/donate/?hosted_button_id=HV9H8JQ6XHGZY)
+
+---
+
 # 📄 License
 
 This project is provided as-is for educational and operational use.
-
-### [Buy me a Coffee?](https://www.paypal.com/donate/?hosted_button_id=HV9H8JQ6XHGZY)
-
