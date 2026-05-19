@@ -37,6 +37,7 @@ Set-ExecutionPolicy Bypass -Scope Process -Force
 ```
 
 Place your `.pfx` or `.p12` certificate file in the same folder as the script before running.
+Run the script directly on the server where the certificate is being renewed or replaced.
 
 ---
 
