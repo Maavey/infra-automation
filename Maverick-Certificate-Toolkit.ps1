@@ -1,7 +1,7 @@
 #Set-ExecutionPolicy Bypass -Scope Process -Force
 cls
 $ScriptName = "Maverick Certificate Toolkit"
-$ScriptVersion = "1.0.1"
+$ScriptVersion = "1.0.5"
 $ScriptAuthor = "Maverick"
 $ExpiryWarningDays = 30
 
@@ -16,7 +16,7 @@ function Show-Banner {
     Write-Host " $ScriptName" -ForegroundColor White
     Write-Host " Version : $ScriptVersion" -ForegroundColor DarkGray
     Write-Host " By      : $ScriptAuthor" -ForegroundColor DarkGray
-    Write-Host " Purpose : Safe certificate replacement for Exchange / IIS / ADFS / WAP" -ForegroundColor DarkGray
+    Write-Host " Purpose : Safe certificate replacement for Exchange / IIS / ADFS / WAP / RDS" -ForegroundColor DarkGray
     Write-Host "============================================================" -ForegroundColor Cyan
 }
 
@@ -106,6 +106,34 @@ function Show-CertSummary($Label, $Cert) {
     Write-Host "Thumbprint : $($Cert.Thumbprint)"
     Write-Host "Expires    : $($Cert.NotAfter)"
     Write-Host "Days Left  : $days"
+}
+
+
+function Get-CertExpiryColor($Cert) {
+    if (-not $Cert -or -not $Cert.NotAfter) { return "DarkGray" }
+
+    $days = [math]::Floor(($Cert.NotAfter - (Get-Date)).TotalDays)
+
+    if ($days -lt 7) { return "Red" }
+    elseif ($days -lt 30) { return "Yellow" }
+    else { return "Green" }
+}
+
+function Show-CertExpiryLine($Label, $Cert) {
+    if (-not $Cert) {
+        Write-Host ("{0,-35} Certificate not found/resolved" -f $Label) -ForegroundColor DarkGray
+        return
+    }
+
+    $days = [math]::Floor(($Cert.NotAfter - (Get-Date)).TotalDays)
+    $color = Get-CertExpiryColor $Cert
+
+    Write-Host ("{0,-35} Expires: {1} | Days Left: {2} | Thumbprint: {3}" -f `
+        $Label, $Cert.NotAfter, $days, $Cert.Thumbprint) -ForegroundColor $color
+}
+
+function Show-CertExpiryLegend {
+    Write-Host "Green = 30+ days | Yellow = less than 30 days | Red = less than 7 days" -ForegroundColor DarkGray
 }
 
 function Import-PfxToLocalMachineMy($PfxFile, $Password, $PreviewCert) {
@@ -282,15 +310,183 @@ function Get-RoleAvailability {
                     else { "Available" }
     }
 
+    Import-Module RemoteDesktop -ErrorAction SilentlyContinue
+    $rdsCmds = @("Get-RDCertificate", "Set-RDCertificate")
+    $missingRdsCmds = @($rdsCmds | Where-Object { -not (Test-CommandAvailable $_) })
+    $rdsServices = @("TermService", "SessionEnv", "UmRdpService", "Tssdis")
+    $installedRdsServices = @($rdsServices | Where-Object { Test-ServiceInstalled $_ })
+
+    $roles["RDS"] = [PSCustomObject]@{
+        Name      = "Remote Desktop Services"
+        Available = ($missingRdsCmds.Count -eq 0 -or $installedRdsServices.Count -gt 0)
+        Reason    = if ($missingRdsCmds.Count -gt 0 -and $installedRdsServices.Count -eq 0) {
+                        "RDS/RDP not detected - RemoteDesktop cmdlets and RDS services not found"
+                    }
+                    elseif ($missingRdsCmds.Count -gt 0) {
+                        "RDP services detected, but RemoteDesktop deployment cmdlets not found"
+                    }
+                    else {
+                        "Available"
+                    }
+    }
+
     return $roles
 }
 
-function Write-RoleMenuLine($Number, $Info) {
+function Get-RoleHealthColor($DaysLeft) {
+    if ($DaysLeft -lt 7) { return "Red" }
+    elseif ($DaysLeft -lt 30) { return "Yellow" }
+    else { return "Green" }
+}
+
+function Get-MinDaysLeft($Dates) {
+    $validDates = @($Dates | Where-Object { $_ })
+    if ($validDates.Count -eq 0) { return $null }
+
+    $days = @(
+        $validDates | ForEach-Object {
+            try { [math]::Floor((([datetime]$_) - (Get-Date)).TotalDays) } catch { $null }
+        } | Where-Object { $null -ne $_ }
+    )
+
+    if ($days.Count -gt 0) { return ($days | Measure-Object -Minimum).Minimum }
+    return $null
+}
+
+function Get-IisMenuMinDays {
+    try {
+        if (-not (Get-Module -ListAvailable WebAdministration)) { return $null }
+        Import-Module WebAdministration -ErrorAction SilentlyContinue
+
+        $bindings = @(Get-IisHttpsBindings)
+        $dates = @()
+
+        foreach ($b in $bindings) {
+            if ($b.Expires) { $dates += $b.Expires }
+            elseif ($b.Cert -and $b.Cert.NotAfter) { $dates += $b.Cert.NotAfter }
+        }
+
+        return Get-MinDaysLeft $dates
+    } catch { return $null }
+}
+
+function Get-AdfsMenuMinDays {
+    try {
+        $dates = @()
+
+        if (Get-Command Get-AdfsSslCertificate -ErrorAction SilentlyContinue) {
+            $ssl = Get-AdfsSslCertificate -ErrorAction SilentlyContinue
+            if ($ssl.CertificateHash) {
+                $cert = Get-LocalMachineCertByThumbprint $ssl.CertificateHash
+                if ($cert -and $cert.NotAfter) { $dates += $cert.NotAfter }
+            }
+        }
+
+        if (Get-Command Get-AdfsCertificate -ErrorAction SilentlyContinue) {
+            $svc = Get-AdfsCertificate -CertificateType Service-Communications -ErrorAction SilentlyContinue
+            if ($svc.Thumbprint) {
+                $cert = Get-LocalMachineCertByThumbprint $svc.Thumbprint
+                if ($cert -and $cert.NotAfter) { $dates += $cert.NotAfter }
+            }
+            elseif ($svc.NotAfter) {
+                $dates += $svc.NotAfter
+            }
+        }
+
+        return Get-MinDaysLeft $dates
+    } catch { return $null }
+}
+
+function Get-WapMenuMinDays {
+    try {
+        $dates = @()
+
+        if (Get-Command Get-WebApplicationProxySslCertificate -ErrorAction SilentlyContinue) {
+            $wap = Get-WebApplicationProxySslCertificate -ErrorAction SilentlyContinue
+
+            if ($wap.Thumbprint) {
+                $cert = Get-LocalMachineCertByThumbprint $wap.Thumbprint
+                if ($cert -and $cert.NotAfter) { $dates += $cert.NotAfter }
+            }
+            elseif ($wap.CertificateHash) {
+                $cert = Get-LocalMachineCertByThumbprint $wap.CertificateHash
+                if ($cert -and $cert.NotAfter) { $dates += $cert.NotAfter }
+            }
+        }
+
+        return Get-MinDaysLeft $dates
+    } catch { return $null }
+}
+
+function Get-ExchangeMenuMinDays {
+    try {
+        if (-not (Get-Command Get-ExchangeCertificate -ErrorAction SilentlyContinue)) { return $null }
+
+        $certs = @(
+            Get-ExchangeCertificate -ErrorAction SilentlyContinue |
+            Where-Object { $_.Services.ToString() -ne "None" }
+        )
+
+        return Get-MinDaysLeft ($certs | ForEach-Object { $_.NotAfter })
+    } catch { return $null }
+}
+
+function Get-RdsMenuMinDays {
+    try {
+        Import-Module RemoteDesktop -ErrorAction SilentlyContinue
+        if (-not (Get-Command Get-RDCertificate -ErrorAction SilentlyContinue)) { return $null }
+
+        $rdsCerts = @()
+
+        try {
+            $rdsCerts = @(Get-RDCertificate -ConnectionBroker $env:COMPUTERNAME -ErrorAction Stop)
+        } catch {
+            try {
+                $rdsCerts = @(Get-RDCertificate -ErrorAction Stop)
+            } catch {
+                $rdsCerts = @()
+            }
+        }
+
+        $dates = @()
+        foreach ($rc in $rdsCerts) {
+            if ($rc.ExpiresOn) {
+                $dates += $rc.ExpiresOn
+            }
+            elseif ($rc.Thumbprint) {
+                $cert = Get-LocalMachineCertByThumbprint $rc.Thumbprint
+                if ($cert -and $cert.NotAfter) { $dates += $cert.NotAfter }
+            }
+        }
+
+        return Get-MinDaysLeft $dates
+    } catch { return $null }
+}
+
+function Write-RoleMenuLine($Number, $Key, $Info) {
+
     $text = "$Number. $($Info.Name)"
-    if ($Info.Available) {
-        Write-Host "$text [Available]" -ForegroundColor White
-    } else {
+
+    if (-not $Info.Available) {
         Write-Host "$text [Unavailable - $($Info.Reason)]" -ForegroundColor DarkGray
+        return
+    }
+
+    $minDays = $null
+
+    switch ($Key) {
+        "IIS"      { $minDays = Get-IisMenuMinDays }
+        "ADFS"     { $minDays = Get-AdfsMenuMinDays }
+        "WAP"      { $minDays = Get-WapMenuMinDays }
+        "EXCHANGE" { $minDays = Get-ExchangeMenuMinDays }
+        "RDS"      { $minDays = Get-RdsMenuMinDays }
+    }
+
+    if ($null -ne $minDays) {
+        $color = Get-RoleHealthColor $minDays
+        Write-Host "$text [$minDays days left]" -ForegroundColor $color
+    } else {
+        Write-Host "$text [Available]" -ForegroundColor White
     }
 }
 
@@ -299,14 +495,15 @@ function Select-Role {
 
     $roles = Get-RoleAvailability
 
-    Write-RoleMenuLine 1 $roles["IIS"]
-    Write-RoleMenuLine 2 $roles["ADFS"]
-    Write-RoleMenuLine 3 $roles["WAP"]
-    Write-RoleMenuLine 4 $roles["EXCHANGE"]
+    Write-RoleMenuLine 1 "IIS" $roles["IIS"]
+    Write-RoleMenuLine 2 "ADFS" $roles["ADFS"]
+    Write-RoleMenuLine 3 "WAP" $roles["WAP"]
+    Write-RoleMenuLine 4 "EXCHANGE" $roles["EXCHANGE"]
+    Write-RoleMenuLine 5 "RDS" $roles["RDS"]
     Write-Host ""
 
     Write-Host "Unavailable roles are shown for visibility but cannot be selected." -ForegroundColor DarkGray
-    $roleInput = Read-Host "Choose available role: 1/IIS, 2/ADFS, 3/WAP, or 4/Exchange"
+    $roleInput = Read-Host "Choose available role: 1/IIS, 2/ADFS, 3/WAP, 4/Exchange, or 5/RDS"
 
     $selectedKey = $null
 
@@ -319,6 +516,8 @@ function Select-Role {
         "WAP"      { $selectedKey = "WAP" }
         "4"        { $selectedKey = "EXCHANGE" }
         "EXCHANGE" { $selectedKey = "EXCHANGE" }
+        "5"        { $selectedKey = "RDS" }
+        "RDS"      { $selectedKey = "RDS" }
         default {
             ERR "Invalid role."
             exit
@@ -350,6 +549,12 @@ function Invoke-IisReplace {
     }
 
     $httpsBindings | Select-Object SiteName, BindingInfo, Port, HostName, Thumbprint, Expires | Format-Table -AutoSize
+
+    SEC "IIS Certificate Expiry Status"
+    Show-CertExpiryLegend
+    foreach ($b in $httpsBindings) {
+        Show-CertExpiryLine "IIS $($b.SiteName) :$($b.Port)" $b.Cert
+    }
 
     $targetIisBindings = @($httpsBindings | Where-Object { $_.Port -eq "443" })
     $skippedIisBindings = @($httpsBindings | Where-Object { $_.Port -ne "443" })
@@ -410,7 +615,14 @@ function Invoke-IisReplace {
     }
 
     SEC "Final IIS Verification"
-    Get-IisHttpsBindings | Select-Object SiteName, BindingInfo, Port, HostName, Thumbprint, Expires | Format-Table -AutoSize
+    $finalIisBindings = @(Get-IisHttpsBindings)
+    $finalIisBindings | Select-Object SiteName, BindingInfo, Port, HostName, Thumbprint, Expires | Format-Table -AutoSize
+
+    SEC "Final IIS Certificate Expiry Status"
+    Show-CertExpiryLegend
+    foreach ($b in $finalIisBindings) {
+        Show-CertExpiryLine "IIS $($b.SiteName) :$($b.Port)" $b.Cert
+    }
     WARN "Old certificates were NOT removed."
     OK "Completed."
 }
@@ -437,6 +649,15 @@ function Invoke-AdfsReplace {
     Write-Host "ADFS Service-Communications certificate:"
     $svc | Format-List
     if ($svc.Thumbprint) { Show-CertSummary "Resolved ADFS Service-Communications certificate:" (Get-LocalMachineCertByThumbprint $svc.Thumbprint) }
+
+    SEC "ADFS Certificate Expiry Status"
+    Show-CertExpiryLegend
+    if ($ssl.CertificateHash) {
+        Show-CertExpiryLine "ADFS SSL" (Get-LocalMachineCertByThumbprint $ssl.CertificateHash)
+    }
+    if ($svc.Thumbprint) {
+        Show-CertExpiryLine "ADFS Service-Comm" (Get-LocalMachineCertByThumbprint $svc.Thumbprint)
+    }
 
     $pfx = Get-NewPfxPreview
 
@@ -466,8 +687,19 @@ function Invoke-AdfsReplace {
     }
 
     SEC "Final ADFS Verification"
-    Get-AdfsSslCertificate | Format-List
-    Get-AdfsCertificate -CertificateType Service-Communications | Format-List
+    $finalAdfsSsl = Get-AdfsSslCertificate
+    $finalAdfsSvc = Get-AdfsCertificate -CertificateType Service-Communications
+    $finalAdfsSsl | Format-List
+    $finalAdfsSvc | Format-List
+
+    SEC "Final ADFS Certificate Expiry Status"
+    Show-CertExpiryLegend
+    if ($finalAdfsSsl.CertificateHash) {
+        Show-CertExpiryLine "ADFS SSL" (Get-LocalMachineCertByThumbprint $finalAdfsSsl.CertificateHash)
+    }
+    if ($finalAdfsSvc.Thumbprint) {
+        Show-CertExpiryLine "ADFS Service-Comm" (Get-LocalMachineCertByThumbprint $finalAdfsSvc.Thumbprint)
+    }
     WARN "Old certificates were NOT removed."
     OK "Completed."
 }
@@ -499,11 +731,27 @@ function Invoke-WapReplace {
     if ($wapSsl.Thumbprint) { Show-CertSummary "Resolved WAP SSL certificate:" (Get-LocalMachineCertByThumbprint $wapSsl.Thumbprint) }
     elseif ($wapSsl.CertificateHash) { Show-CertSummary "Resolved WAP SSL certificate:" (Get-LocalMachineCertByThumbprint $wapSsl.CertificateHash) }
 
+    SEC "WAP Certificate Expiry Status"
+    Show-CertExpiryLegend
+    if ($wapSsl.Thumbprint) {
+        Show-CertExpiryLine "WAP SSL" (Get-LocalMachineCertByThumbprint $wapSsl.Thumbprint)
+    }
+    elseif ($wapSsl.CertificateHash) {
+        Show-CertExpiryLine "WAP SSL" (Get-LocalMachineCertByThumbprint $wapSsl.CertificateHash)
+    }
+
     if ($hasIIS) {
         SEC "Current IIS Certificates On WAP"
         $httpsBindings = @(Get-IisHttpsBindings)
         if ($httpsBindings.Count -gt 0) {
             $httpsBindings | Select-Object SiteName, BindingInfo, Port, HostName, Thumbprint, Expires | Format-Table -AutoSize
+
+            SEC "WAP Local IIS Certificate Expiry Status"
+            Show-CertExpiryLegend
+            foreach ($b in $httpsBindings) {
+                Show-CertExpiryLine "IIS $($b.SiteName) :$($b.Port)" $b.Cert
+            }
+
             $targetIisBindings = @($httpsBindings | Where-Object { $_.Port -eq "443" })
             $skipped = @($httpsBindings | Where-Object { $_.Port -ne "443" })
             if ($skipped.Count -gt 0) {
@@ -602,10 +850,28 @@ function Invoke-WapReplace {
     }
 
     SEC "Final WAP Verification"
-    Get-WebApplicationProxySslCertificate | Format-List
+    $finalWapSsl = Get-WebApplicationProxySslCertificate
+    $finalWapSsl | Format-List
+
+    SEC "Final WAP Certificate Expiry Status"
+    Show-CertExpiryLegend
+    if ($finalWapSsl.Thumbprint) {
+        Show-CertExpiryLine "WAP SSL" (Get-LocalMachineCertByThumbprint $finalWapSsl.Thumbprint)
+    }
+    elseif ($finalWapSsl.CertificateHash) {
+        Show-CertExpiryLine "WAP SSL" (Get-LocalMachineCertByThumbprint $finalWapSsl.CertificateHash)
+    }
+
     if ($hasIIS) {
         SEC "Final IIS Verification On WAP"
-        Get-IisHttpsBindings | Select-Object SiteName, BindingInfo, Port, HostName, Thumbprint, Expires | Format-Table -AutoSize
+        $finalWapIisBindings = @(Get-IisHttpsBindings)
+        $finalWapIisBindings | Select-Object SiteName, BindingInfo, Port, HostName, Thumbprint, Expires | Format-Table -AutoSize
+
+        SEC "Final WAP Local IIS Certificate Expiry Status"
+        Show-CertExpiryLegend
+        foreach ($b in $finalWapIisBindings) {
+            Show-CertExpiryLine "IIS $($b.SiteName) :$($b.Port)" $b.Cert
+        }
     }
     WARN "Old certificates were NOT removed."
     OK "Completed."
@@ -629,6 +895,14 @@ function Invoke-ExchangeReplace {
     $exchangeCerts |
         Select-Object Subject, Thumbprint, Services, NotAfter, Status, IsSelfSigned |
         Format-Table -AutoSize
+
+    SEC "Exchange Certificate Expiry Status"
+    Show-CertExpiryLegend
+    foreach ($cert in $exchangeCerts) {
+        if ($cert.Services.ToString() -ne "None") {
+            Show-CertExpiryLine "Exchange $($cert.Services)" $cert
+        }
+    }
 
     $oldCert = $exchangeCerts |
         Where-Object {
@@ -723,11 +997,278 @@ function Invoke-ExchangeReplace {
     }
 
     SEC "Final Exchange Verification"
-    Get-ExchangeCertificate -Thumbprint $imported.Thumbprint |
+    $finalExchangeCert = Get-ExchangeCertificate -Thumbprint $imported.Thumbprint
+    $finalExchangeCert |
         Select-Object Subject, Thumbprint, Services, NotAfter, Status |
         Format-List
 
+    SEC "Final Exchange Certificate Expiry Status"
+    Show-CertExpiryLegend
+    Show-CertExpiryLine "Exchange $($finalExchangeCert.Services)" $finalExchangeCert
+
     WARN "Old Exchange certificate was NOT removed: $($oldCert.Thumbprint)"
+    OK "Completed."
+}
+
+
+function Invoke-RdsReplace {
+    SEC "RDS Pre-Check"
+
+    foreach ($cmd in @("Get-RDCertificate", "Set-RDCertificate")) {
+        if (-not (Get-Command $cmd -ErrorAction SilentlyContinue)) {
+            ERR "RDS cmdlet not found: $cmd"
+            exit
+        }
+    }
+    OK "RDS cmdlets available."
+
+    SEC "Detect RD Connection Broker"
+
+$broker = $null
+
+try {
+    if (Get-Command Get-RDServer -ErrorAction SilentlyContinue) {
+
+        $rdServers = @(Get-RDServer -ErrorAction Stop)
+
+        $brokerServer = $rdServers |
+            Where-Object { $_.Roles -match "RDS-CONNECTION-BROKER" } |
+            Select-Object -First 1
+
+        if ($brokerServer) {
+            $broker = $brokerServer.Server
+            OK "Detected RD Connection Broker: $broker"
+        }
+    }
+}
+catch {
+    WARN "Automatic RD Connection Broker detection failed."
+}
+
+if ([string]::IsNullOrWhiteSpace($broker)) {
+    WARN "Could not automatically detect RD Connection Broker."
+    $brokerInput = Read-Host "Enter RD Connection Broker FQDN, or press ENTER for local server"
+
+    if ([string]::IsNullOrWhiteSpace($brokerInput)) {
+        $broker = $env:COMPUTERNAME
+    }
+    else {
+        $broker = $brokerInput.Trim()
+    }
+}
+
+Write-Host "Using RD Connection Broker: $broker"
+
+    SEC "Current RDS Deployment Certificates"
+    try {
+        $rdsCerts = @(Get-RDCertificate -ConnectionBroker $broker -ErrorAction Stop)
+        if ($rdsCerts.Count -gt 0) {
+            $rdsCerts | Format-Table Role, Level, Subject, IssuedTo, ExpiresOn, Thumbprint -AutoSize
+
+            SEC "RDS Certificate Expiry Status"
+            Show-CertExpiryLegend
+            foreach ($rc in $rdsCerts) {
+                $label = "RDS $($rc.Role)"
+                if ($rc.Thumbprint) {
+                    $resolvedCert = Get-LocalMachineCertByThumbprint $rc.Thumbprint
+                    if ($resolvedCert) {
+                        Show-CertExpiryLine $label $resolvedCert
+                    }
+                    elseif ($rc.ExpiresOn) {
+                        $days = [math]::Floor(($rc.ExpiresOn - (Get-Date)).TotalDays)
+                        $color = Get-RoleHealthColor $days
+                        Write-Host ("{0,-35} Expires: {1} | Days Left: {2} | Thumbprint: {3}" -f $label, $rc.ExpiresOn, $days, $rc.Thumbprint) -ForegroundColor $color
+                    }
+                }
+                elseif ($rc.ExpiresOn) {
+                    $days = [math]::Floor(($rc.ExpiresOn - (Get-Date)).TotalDays)
+                    $color = Get-RoleHealthColor $days
+                    Write-Host ("{0,-35} Expires: {1} | Days Left: {2}" -f $label, $rc.ExpiresOn, $days) -ForegroundColor $color
+                }
+            }
+        } else {
+            WARN "No RDS deployment certificates returned by Get-RDCertificate."
+        }
+    } catch {
+        ERR "Failed to read RDS deployment certificates from broker '$broker': $($_.Exception.Message)"
+        exit
+    }
+
+    SEC "Current Local RDP-Tcp Listener Certificate"
+    $listener = $null
+    try {
+        $listener = Get-WmiObject `
+            -Namespace "root\cimv2\terminalservices" `
+            -Class "Win32_TSGeneralSetting" `
+            -Filter "TerminalName='RDP-tcp'" `
+            -ErrorAction Stop
+
+        $listenerThumb = ($listener.SSLCertificateSHA1Hash -replace " ", "").ToUpper()
+        Write-Host "RDP-Tcp Thumbprint : $listenerThumb"
+        if ($listenerThumb) {
+            Show-CertSummary "Resolved local RDP-Tcp listener certificate:" (Get-LocalMachineCertByThumbprint $listenerThumb)
+        }
+    } catch {
+        WARN "Could not read local RDP-Tcp listener certificate: $($_.Exception.Message)"
+    }
+
+    $pfx = Get-NewPfxPreview
+
+    SEC "RDS Coverage Notice"
+    Write-Host "RDS deployment roles normally require a certificate that covers the public/internal names used by RD Web, RD Gateway and RD Connection Broker."
+    Write-Host "This script shows the certificate details but does not enforce name matching for RDS because deployments vary."
+
+    SEC "Final Confirmation"
+    $rolesToUpdate = @(
+        $rdsCerts |
+        Where-Object { $_.Role -and ($_.Thumbprint -or $_.ExpiresOn) } |
+        Select-Object -ExpandProperty Role -Unique
+    )
+
+    if ($rolesToUpdate.Count -eq 0) {
+        ERR "No existing assigned RDS certificate roles found. Nothing to replace."
+        exit
+    }
+
+    Write-Host "This will IMPORT/APPLY the PFX to existing RDS deployment roles on broker: $broker"
+    Write-Host "Roles that will be updated:"
+    $rolesToUpdate | ForEach-Object { Write-Host " - $_" }
+    Write-Host ""
+    Write-Host "The local RDP-Tcp listener certificate will be updated only if an existing assigned certificate is detected."
+    Write-Host "Old certificates will NOT be removed."
+
+    SEC "Detect Existing RDP-Tcp Listener Certificate"
+
+$updateListener = $false
+
+try {
+
+    $rdpSetting = Get-WmiObject `
+        -Namespace "root\cimv2\terminalservices" `
+        -Class "Win32_TSGeneralSetting" `
+        -Filter "TerminalName='RDP-tcp'"
+
+    $existingHash = ($rdpSetting.SSLCertificateSHA1Hash -replace " ", "").ToUpper()
+
+    if (-not [string]::IsNullOrWhiteSpace($existingHash)) {
+
+        $existingRdpCert = Get-ChildItem Cert:\LocalMachine\My -ErrorAction SilentlyContinue |
+            Where-Object { $_.Thumbprint -eq $existingHash } |
+            Select-Object -First 1
+
+        if ($existingRdpCert) {
+
+            Show-CertSummary "Existing RDP-Tcp listener certificate:" $existingRdpCert
+
+            $updateListener = $true
+            OK "Existing RDP listener certificate detected. It WILL be updated automatically."
+        }
+        else {
+
+            WARN "RDP listener has a configured thumbprint but certificate was not found in LocalMachine\My."
+        }
+    }
+    else {
+
+        WARN "No custom RDP listener certificate detected. Listener update will be skipped."
+    }
+
+}
+catch {
+
+    WARN "Could not detect RDP listener certificate. Listener update will be skipped."
+}
+    $confirm = Read-Host "Type APPLY to import and assign"
+    if ($confirm -ne "APPLY") { WARN "Cancelled. No changes made."; exit }
+
+    Require-AdministratorForApply
+
+    try {
+        foreach ($rdsRole in $rolesToUpdate) {
+            try {
+                Set-RDCertificate `
+                    -Role $rdsRole `
+                    -ImportPath $pfx.File.FullName `
+                    -Password $pfx.Password `
+                    -ConnectionBroker $broker `
+                    -Force `
+                    -ErrorAction Stop
+
+                OK "Updated RDS deployment role: $rdsRole"
+            } catch {
+                WARN "Could not update RDS deployment role $rdsRole : $($_.Exception.Message)"
+            }
+        }
+
+        if ($updateListener) {
+            SEC "Update Local RDP-Tcp Listener"
+
+            $imported = Import-PfxToLocalMachineMy $pfx.File $pfx.Password $pfx.Cert
+            $thumb = ($imported.Thumbprint -replace " ", "").ToUpper()
+
+            $rdpSetting = Get-WmiObject `
+                -Namespace "root\cimv2\terminalservices" `
+                -Class "Win32_TSGeneralSetting" `
+                -Filter "TerminalName='RDP-tcp'" `
+                -ErrorAction Stop
+
+            Set-WmiInstance -Path $rdpSetting.__PATH -Arguments @{
+                SSLCertificateSHA1Hash = $thumb
+            } | Out-Null
+
+            OK "Updated local RDP-Tcp listener certificate: $thumb"
+            WARN "A Remote Desktop Services restart or server reboot may be required for the listener change to fully apply."
+        }
+    } catch {
+        ERR "RDS update failed: $($_.Exception.Message)"
+        exit
+    }
+
+    SEC "Final RDS Deployment Verification"
+    try {
+        $finalRdsCerts = @(Get-RDCertificate -ConnectionBroker $broker -ErrorAction Stop)
+        $finalRdsCerts | Format-Table Role, Level, Subject, IssuedTo, ExpiresOn, Thumbprint -AutoSize
+
+        SEC "Final RDS Certificate Expiry Status"
+        Show-CertExpiryLegend
+        foreach ($rc in $finalRdsCerts) {
+            $label = "RDS $($rc.Role)"
+            if ($rc.Thumbprint) {
+                $resolvedCert = Get-LocalMachineCertByThumbprint $rc.Thumbprint
+                if ($resolvedCert) {
+                    Show-CertExpiryLine $label $resolvedCert
+                }
+                elseif ($rc.ExpiresOn) {
+                    $days = [math]::Floor(($rc.ExpiresOn - (Get-Date)).TotalDays)
+                    $color = Get-RoleHealthColor $days
+                    Write-Host ("{0,-35} Expires: {1} | Days Left: {2} | Thumbprint: {3}" -f $label, $rc.ExpiresOn, $days, $rc.Thumbprint) -ForegroundColor $color
+                }
+            }
+            elseif ($rc.ExpiresOn) {
+                $days = [math]::Floor(($rc.ExpiresOn - (Get-Date)).TotalDays)
+                $color = Get-RoleHealthColor $days
+                Write-Host ("{0,-35} Expires: {1} | Days Left: {2}" -f $label, $rc.ExpiresOn, $days) -ForegroundColor $color
+            }
+        }
+    } catch {
+        WARN "Could not verify RDS deployment certificates: $($_.Exception.Message)"
+    }
+
+    if ($updateListener) {
+        SEC "Final RDP-Tcp Listener Verification"
+        try {
+            Get-WmiObject `
+                -Namespace "root\cimv2\terminalservices" `
+                -Class "Win32_TSGeneralSetting" `
+                -Filter "TerminalName='RDP-tcp'" |
+                Select-Object TerminalName, SSLCertificateSHA1Hash |
+                Format-List
+        } catch {
+            WARN "Could not verify RDP-Tcp listener certificate: $($_.Exception.Message)"
+        }
+    }
+
+    WARN "Old certificates were NOT removed."
     OK "Completed."
 }
 
@@ -747,4 +1288,5 @@ switch ($role) {
     "ADFS"     { Invoke-AdfsReplace }
     "WAP"      { Invoke-WapReplace }
     "EXCHANGE" { Invoke-ExchangeReplace }
+    "RDS"      { Invoke-RdsReplace }
 }
