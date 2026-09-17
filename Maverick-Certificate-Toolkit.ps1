@@ -880,7 +880,7 @@ function Invoke-WapReplace {
 function Invoke-ExchangeReplace {
     SEC "Exchange Pre-Check"
 
-    foreach ($cmd in @("Get-ExchangeCertificate", "Import-ExchangeCertificate", "Enable-ExchangeCertificate")) {
+    foreach ($cmd in @("Get-ExchangeCertificate", "Import-ExchangeCertificate", "Enable-ExchangeCertificate", "Get-ReceiveConnector", "Set-ReceiveConnector", "Get-SendConnector", "Set-SendConnector")) {
         if (-not (Get-Command $cmd -ErrorAction SilentlyContinue)) {
             ERR "Exchange cmdlet not found: $cmd. Run from Exchange Management Shell."
             exit
@@ -910,7 +910,7 @@ function Invoke-ExchangeReplace {
             $_.IsSelfSigned -eq $false -and
             $_.NotAfter -le $now.AddDays($ExpiryWarningDays)
         } |
-        Sort-Object NotAfter |
+        Sort-Object @{ Expression = { ($_.Services.ToString() -split ",").Count }; Descending = $true }, @{ Expression = { $_.NotAfter }; Ascending = $true } |
         Select-Object -First 1
 
     if (-not $oldCert) {
@@ -948,6 +948,40 @@ function Invoke-ExchangeReplace {
     Write-Host "Covers:"
     $requiredNames | ForEach-Object { Write-Host " - $_" }
 
+    # Detect connectors explicitly bound to the selected certificate.
+    # Exchange stores TlsCertificateName as: <I>Issuer<S>Subject
+    $oldTlsCertName = "<I>$($oldCert.Issuer)<S>$($oldCert.Subject)"
+
+    SEC "Exchange TLS Connector Check"
+
+    $receiveConnectors = @(
+        Get-ReceiveConnector -ErrorAction SilentlyContinue | Where-Object {
+            $_.TlsCertificateName -and $_.TlsCertificateName.ToString() -eq $oldTlsCertName
+        }
+    )
+
+    $sendConnectors = @(
+        Get-SendConnector -ErrorAction SilentlyContinue | Where-Object {
+            $_.TlsCertificateName -and $_.TlsCertificateName.ToString() -eq $oldTlsCertName
+        }
+    )
+
+    if ($receiveConnectors.Count -gt 0) {
+        WARN "Receive Connectors using selected old certificate:"
+        $receiveConnectors | ForEach-Object { Write-Host " - $($_.Identity)" }
+    } else {
+        OK "No Receive Connectors explicitly reference the selected certificate."
+    }
+
+    if ($sendConnectors.Count -gt 0) {
+        WARN "Send Connectors using selected old certificate:"
+        $sendConnectors | ForEach-Object { Write-Host " - $($_.Identity)" }
+    } else {
+        OK "No Send Connectors explicitly reference the selected certificate."
+    }
+
+    $connectorMigrationRequired = ($receiveConnectors.Count -gt 0 -or $sendConnectors.Count -gt 0)
+
     $pfx = Get-NewPfxPreview
 
     if ($pfx.Cert.NotAfter -le $oldCert.NotAfter) {
@@ -967,8 +1001,18 @@ function Invoke-ExchangeReplace {
         exit
     }
 
+    $newTlsCertName = "<I>$($pfx.Cert.Issuer)<S>$($pfx.Cert.Subject)"
+
     SEC "Final Confirmation"
     Write-Host "This will IMPORT the PFX using Exchange and ASSIGN it to the SAME Exchange services: $oldServices"
+    if ($receiveConnectors.Count -gt 0) {
+        Write-Host "Receive Connector TLS assignments that will be migrated:"
+        $receiveConnectors | ForEach-Object { Write-Host " - $($_.Identity)" }
+    }
+    if ($sendConnectors.Count -gt 0) {
+        Write-Host "Send Connector TLS assignments that will be migrated:"
+        $sendConnectors | ForEach-Object { Write-Host " - $($_.Identity)" }
+    }
     Write-Host "It does NOT directly edit IIS bindings and does NOT remove the old certificate."
     Write-Host "Old thumbprint: $($oldCert.Thumbprint)"
     $confirm = Read-Host "Type APPLY to import and assign"
@@ -991,6 +1035,22 @@ function Invoke-ExchangeReplace {
         OK "Exchange certificate ready: $($imported.Thumbprint)"
         Enable-ExchangeCertificate -Thumbprint $imported.Thumbprint -Services $oldServices -Force
         OK "New certificate assigned to Exchange services: $oldServices"
+
+        if ($receiveConnectors.Count -gt 0) {
+            SEC "Update Receive Connector TLS Certificates"
+            foreach ($rc in $receiveConnectors) {
+                Set-ReceiveConnector -Identity $rc.Identity -TlsCertificateName $newTlsCertName -ErrorAction Stop
+                OK "Updated Receive Connector: $($rc.Identity)"
+            }
+        }
+
+        if ($sendConnectors.Count -gt 0) {
+            SEC "Update Send Connector TLS Certificates"
+            foreach ($sc in $sendConnectors) {
+                Set-SendConnector -Identity $sc.Identity -TlsCertificateName $newTlsCertName -ErrorAction Stop
+                OK "Updated Send Connector: $($sc.Identity)"
+            }
+        }
     } catch {
         ERR "Exchange update failed: $($_.Exception.Message)"
         exit
@@ -1005,6 +1065,33 @@ function Invoke-ExchangeReplace {
     SEC "Final Exchange Certificate Expiry Status"
     Show-CertExpiryLegend
     Show-CertExpiryLine "Exchange $($finalExchangeCert.Services)" $finalExchangeCert
+
+    if ($connectorMigrationRequired) {
+        SEC "Final Exchange TLS Connector Verification"
+        foreach ($rc in $receiveConnectors) {
+            $v = Get-ReceiveConnector -Identity $rc.Identity -ErrorAction SilentlyContinue
+            if ($v -and $v.TlsCertificateName -and $v.TlsCertificateName.ToString() -eq $newTlsCertName) { OK "Receive: $($rc.Identity) -> new certificate" }
+            else { ERR "Receive: $($rc.Identity) -> verification FAILED" }
+        }
+        foreach ($sc in $sendConnectors) {
+            $v = Get-SendConnector -Identity $sc.Identity -ErrorAction SilentlyContinue
+            if ($v -and $v.TlsCertificateName -and $v.TlsCertificateName.ToString() -eq $newTlsCertName) { OK "Send: $($sc.Identity) -> new certificate" }
+            else { ERR "Send: $($sc.Identity) -> verification FAILED" }
+        }
+    }
+
+    if ($connectorMigrationRequired) {
+        SEC "Restart Exchange Transport"
+        try {
+            Restart-Service MSExchangeTransport -Force -ErrorAction Stop
+            OK "MSExchangeTransport restarted because TLS connector assignments were changed."
+        } catch {
+            ERR "TLS connector assignments were changed, but MSExchangeTransport restart failed: $($_.Exception.Message)"
+            WARN "Review/restart the Microsoft Exchange Transport service manually."
+        }
+    } else {
+        OK "No TLS connector assignments changed. MSExchangeTransport restart not required."
+    }
 
     WARN "Old Exchange certificate was NOT removed: $($oldCert.Thumbprint)"
     OK "Completed."
